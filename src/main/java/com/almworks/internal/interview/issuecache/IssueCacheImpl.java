@@ -45,9 +45,9 @@ public class IssueCacheImpl implements IssueCache {
         for (final Long issueId : result.getIssueIds()) {
           final Map<String, Object> values = result.getValues(issueId);
           if (values != null) {
-            values.forEach((key1, value) -> {
-              final Pair<Long, String> key = Pair.of(issueId, key1);
-              cache.put(key, value);
+            values.forEach((key, value) -> {
+              final Pair<Long, String> compositeKey = Pair.of(issueId, key);
+              cache.put(compositeKey, value);
             });
             listeners.get(issueId).forEach(listener -> listener.onIssueChanged(issueId, values));
           }
