@@ -1,24 +1,19 @@
 package com.almworks.internal.interview.issuecache;
 
 import com.google.common.base.Preconditions;
-import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.LinkedListMultimap;
 import com.google.common.collect.Multimap;
 import org.apache.commons.lang3.tuple.Pair;
 
-import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
-import java.util.stream.Collectors;
-
-import static java.util.Collections.emptyList;
 
 public class IssueCacheImpl implements IssueCache {
 
   private final IssueLoader loader;
   private final Set<String> fieldIds;
-  private final Multimap<Long, Pair<String, Object>> cache;
+  private final Map<Pair<Long, String>, Object> cache;
   private final Multimap<Long, Listener> listeners;
 
   public IssueCacheImpl(final IssueChangeTracker tracker,
@@ -29,7 +24,7 @@ public class IssueCacheImpl implements IssueCache {
     Preconditions.checkNotNull(fieldIds, "FieldIds can't be null.");
     this.loader = loader;
     this.fieldIds = fieldIds;
-    this.cache = ArrayListMultimap.create();
+    this.cache = new HashMap<>();
     this.listeners = LinkedListMultimap.create();
     tracker.subscribe(issueIds -> reloadCache(issueIds, fieldIds));
   }
@@ -50,11 +45,10 @@ public class IssueCacheImpl implements IssueCache {
         for (final Long issueId : result.getIssueIds()) {
           final Map<String, Object> values = result.getValues(issueId);
           if (values != null) {
-            final List<Pair<String, Object>> pairs = values.entrySet()
-                    .stream()
-                    .map(e -> Pair.of(e.getKey(), e.getValue()))
-                    .collect(Collectors.toList());
-            cache.replaceValues(issueId, pairs);
+            values.forEach((key1, value) -> {
+              final Pair<Long, String> key = Pair.of(issueId, key1);
+              cache.put(key, value);
+            });
             listeners.get(issueId).forEach(listener -> listener.onIssueChanged(issueId, values));
           }
         }
@@ -62,19 +56,13 @@ public class IssueCacheImpl implements IssueCache {
   }
 
   @Override
-  public void unsubscribe(Listener listener) {
+  public void unsubscribe(final Listener listener) {
     listeners.entries().removeIf(entry -> entry.getValue() == listener);
   }
 
   @Override
-  public Object getField(long issueId, String fieldId) {
-    return cache.asMap()
-            .getOrDefault(issueId, emptyList())
-            .stream()
-            .filter(pair -> Objects.equals(pair.getKey(), fieldId))
-            .map(Pair::getValue)
-            .findFirst()
-            .orElse(null);
+  public Object getField(long issueId, final String fieldId) {
+    return cache.get(Pair.of(issueId, fieldId));
   }
 
   @Override
