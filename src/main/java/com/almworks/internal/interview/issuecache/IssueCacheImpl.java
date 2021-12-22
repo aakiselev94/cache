@@ -3,17 +3,18 @@ package com.almworks.internal.interview.issuecache;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.LinkedListMultimap;
 import com.google.common.collect.Multimap;
-import org.apache.commons.lang3.tuple.Pair;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
+import static java.util.Collections.emptyMap;
+
 public class IssueCacheImpl implements IssueCache {
 
   private final IssueLoader loader;
   private final Set<String> fieldIds;
-  private final Map<Pair<Long, String>, Object> cache;
+  private final Map<Long, Map<String, Object>> cache;
   private final Multimap<Long, Listener> listeners;
 
   public IssueCacheImpl(final IssueChangeTracker tracker,
@@ -45,10 +46,7 @@ public class IssueCacheImpl implements IssueCache {
         for (final Long issueId : result.getIssueIds()) {
           final Map<String, Object> values = result.getValues(issueId);
           if (values != null) {
-            values.forEach((key, value) -> {
-              final Pair<Long, String> compositeKey = Pair.of(issueId, key);
-              cache.put(compositeKey, value);
-            });
+            cache.put(issueId, values);
             listeners.get(issueId).forEach(listener -> listener.onIssueChanged(issueId, values));
           }
         }
@@ -62,7 +60,7 @@ public class IssueCacheImpl implements IssueCache {
 
   @Override
   public Object getField(long issueId, final String fieldId) {
-    return cache.get(Pair.of(issueId, fieldId));
+    return cache.getOrDefault(issueId, emptyMap()).get(fieldId);
   }
 
   @Override
