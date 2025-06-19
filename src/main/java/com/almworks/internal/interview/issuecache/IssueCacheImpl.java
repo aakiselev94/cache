@@ -1,71 +1,100 @@
 package com.almworks.internal.interview.issuecache;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.LinkedListMultimap;
-import com.google.common.collect.Multimap;
-
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import static java.util.Collections.emptyMap;
+public class IssueCacheImpl implements IssueCache, IssueChangeTracker.Listener {
 
-public class IssueCacheImpl implements IssueCache {
+    private final IssueLoader issueLoader;
+    private final Set<String> fieldIds;
+    private final Map<Long, Map<String, Object>> cache = new HashMap<>();
+    private final Map<Listener, Set<Long>> listeners = new HashMap<>();
+    private final Map<Long, Set<Listener>> issueToListeners = new HashMap<>();
 
-  private final IssueLoader loader;
-  private final Set<String> fieldIds;
-  private final Map<Long, Map<String, Object>> cache;
-  private final Multimap<Long, Listener> listeners;
-
-  public IssueCacheImpl(final IssueChangeTracker tracker,
-                        final IssueLoader loader,
-                        final Set<String> fieldIds) {
-    Preconditions.checkNotNull(tracker, "Tracker can't be null.");
-    Preconditions.checkNotNull(loader, "Loader can't be null.");
-    Preconditions.checkNotNull(fieldIds, "FieldIds can't be null.");
-    this.loader = loader;
-    this.fieldIds = fieldIds;
-    this.cache = new HashMap<>();
-    this.listeners = LinkedListMultimap.create();
-    tracker.subscribe(issueIds -> reloadCache(issueIds, fieldIds));
-  }
-
-  @Override
-  public void subscribe(final Set<Long> issueIds, final Listener listener) {
-    Preconditions.checkNotNull(issueIds, "IssueIds can't be null.");
-    Preconditions.checkNotNull(listener, "Listener can't be null.");
-    for (final Long issueId : issueIds) {
-      listeners.put(issueId, listener);
+    public IssueCacheImpl(IssueLoader issueLoader, Set<String> fieldIds, IssueChangeTracker issueChangeTracker) {
+        this.issueLoader = issueLoader;
+        this.fieldIds = fieldIds;
+        issueChangeTracker.subscribe(this);
     }
-    reloadCache(issueIds, fieldIds);
-  }
 
-  private void reloadCache(final Set<Long> issueIds, final Set<String> fieldIds) {
-    loader.load(issueIds, fieldIds)
-      .thenAccept(result -> {
-        for (final Long issueId : result.getIssueIds()) {
-          final Map<String, Object> values = result.getValues(issueId);
-          if (values != null) {
-            cache.put(issueId, values);
-            listeners.get(issueId).forEach(listener -> listener.onIssueChanged(issueId, values));
-          }
+    @Override
+    public synchronized void subscribe(Set<Long> issueIds, Listener listener) {
+        listeners.computeIfAbsent(listener, l -> new HashSet<>()).addAll(issueIds);
+
+        for (Long issueId: issueIds) {
+            issueToListeners.computeIfAbsent(issueId, id -> new HashSet<>()).add(listener);
         }
-      });
-  }
 
-  @Override
-  public void unsubscribe(final Listener listener) {
-    listeners.entries().removeIf(entry -> entry.getValue() == listener);
-  }
+        for (Long issueId: issueIds) {
+            Map<String, Object> fields = cache.get(issueId);
+            if (fields != null && !fields.isEmpty()) {
+                listener.onIssueChanged(issueId, new HashMap<>(fields));
+            }
+        }
 
-  @Override
-  public Object getField(long issueId, final String fieldId) {
-    return cache.getOrDefault(issueId, emptyMap()).get(fieldId);
-  }
+        var toLoad = new HashSet<Long>();
+        for (Long issueId : issueIds) {
+            if (!cache.containsKey(issueId)) {
+                toLoad.add(issueId);
+            }
+        }
 
-  @Override
-  public Set<String> getFieldIds() {
-    return fieldIds;
-  }
+        if (!toLoad.isEmpty()) {
+            issueLoader.load(toLoad, fieldIds).thenAccept(this::updateCacheFromResult);
+        }
+    }
+
+    @Override
+    public synchronized void unsubscribe(Listener listener) {
+        Set<Long> issuedIds = listeners.remove(listener);
+        if (issuedIds != null) {
+            for (Long issuedId : issuedIds) {
+                Set<Listener> ls = issueToListeners.get(issuedId);
+                if (ls != null) {
+                    ls.remove(listener);
+                    if (ls.isEmpty()) {
+                        issueToListeners.remove(issuedId);
+                    }
+                }
+            }
+        }
+    }
+
+    @Override
+    public synchronized Object getField(long issueId, String fieldId) {
+        Map<String, Object> fields = cache.get(issueId);
+        if (fields == null || !fieldIds.contains(fieldId)) {
+            return null;
+        }
+        return fields.get(fieldId);
+    }
+
+    @Override
+    public Set<String> getFieldIds() {
+        return fieldIds;
+    }
+
+    @Override
+    public void onIssuesChanged(Set<Long> issueIds) {
+        issueLoader.load(issueIds, fieldIds).thenAccept(this::updateCacheFromResult);
+    }
+
+    private synchronized void updateCacheFromResult(IssueLoader.Result result) {
+        for (Long issueId : result.getIssueIds()) {
+            Map<String, Object> newFields = result.getValues(issueId);
+            if (newFields == null) continue;
+
+            cache.put(issueId, new HashMap<>(newFields));
+
+            Set<Listener> ls = issueToListeners.get(issueId);
+            if (ls != null) {
+                for (Listener listener: ls) {
+                    listener.onIssueChanged(issueId, new HashMap<>(newFields));
+                }
+            }
+        }
+    }
 
 }
