@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletionStage;
 
 public class IssueCacheImpl implements IssueCache, IssueChangeTracker.Listener {
 
@@ -12,6 +13,7 @@ public class IssueCacheImpl implements IssueCache, IssueChangeTracker.Listener {
     private final Map<Long, Map<String, Object>> cache = new HashMap<>();
     private final Map<Listener, Set<Long>> listeners = new HashMap<>();
     private final Map<Long, Set<Listener>> issueToListeners = new HashMap<>();
+    private final Map<Long, CompletionStage<Void>> inFlightRequests = new HashMap<>();
 
     public IssueCacheImpl(IssueLoader issueLoader, Set<String> fieldIds, IssueChangeTracker issueChangeTracker) {
         this.issueLoader = issueLoader;
@@ -20,55 +22,52 @@ public class IssueCacheImpl implements IssueCache, IssueChangeTracker.Listener {
     }
 
     @Override
-    public synchronized void subscribe(Set<Long> issueIds, Listener listener) {
+    public void subscribe(Set<Long> issueIds, Listener listener) {
         listeners.computeIfAbsent(listener, l -> new HashSet<>()).addAll(issueIds);
+
+        var toLoad = new HashSet<Long>();
 
         for (Long issueId: issueIds) {
             issueToListeners.computeIfAbsent(issueId, id -> new HashSet<>()).add(listener);
-        }
 
-        for (Long issueId: issueIds) {
             Map<String, Object> fields = cache.get(issueId);
             if (fields != null && !fields.isEmpty()) {
                 listener.onIssueChanged(issueId, new HashMap<>(fields));
             }
-        }
 
-        var toLoad = new HashSet<Long>();
-        for (Long issueId : issueIds) {
-            if (!cache.containsKey(issueId)) {
+            if (!cache.containsKey(issueId) && !inFlightRequests.containsKey(issueId)) {
                 toLoad.add(issueId);
             }
         }
 
         if (!toLoad.isEmpty()) {
-            issueLoader.load(toLoad, fieldIds).thenAccept(this::updateCacheFromResult);
-        }
-    }
-
-    @Override
-    public synchronized void unsubscribe(Listener listener) {
-        Set<Long> issuedIds = listeners.remove(listener);
-        if (issuedIds != null) {
-            for (Long issuedId : issuedIds) {
-                Set<Listener> ls = issueToListeners.get(issuedId);
-                if (ls != null) {
-                    ls.remove(listener);
-                    if (ls.isEmpty()) {
-                        issueToListeners.remove(issuedId);
-                    }
-                }
+            CompletionStage<Void> completion = issueLoader.load(toLoad, fieldIds).thenAccept(this::updateCacheFromResult);
+            for (Long issuedId : toLoad) {
+                inFlightRequests.putIfAbsent(issuedId, completion);
             }
         }
     }
 
     @Override
-    public synchronized Object getField(long issueId, String fieldId) {
-        Map<String, Object> fields = cache.get(issueId);
-        if (fields == null || !fieldIds.contains(fieldId)) {
-            return null;
+    public void unsubscribe(Listener listener) {
+        Set<Long> issuedIds = listeners.remove(listener);
+        if (issuedIds == null) return;
+
+        for (Long issuedId : issuedIds) {
+            Set<Listener> issueListeners = issueToListeners.get(issuedId);
+            if (issueListeners == null) continue;
+
+            issueListeners.remove(listener);
+            if (issueListeners.isEmpty()) {
+                issueToListeners.remove(issuedId);
+            }
         }
-        return fields.get(fieldId);
+    }
+
+    @Override
+    public Object getField(long issueId, String fieldId) {
+        Map<String, Object> fields = cache.get(issueId);
+        return fields == null ? null : fields.get(fieldId);
     }
 
     @Override
@@ -78,21 +77,25 @@ public class IssueCacheImpl implements IssueCache, IssueChangeTracker.Listener {
 
     @Override
     public void onIssuesChanged(Set<Long> issueIds) {
-        issueLoader.load(issueIds, fieldIds).thenAccept(this::updateCacheFromResult);
+        CompletionStage<Void> completion = issueLoader.load(issueIds, fieldIds).thenAccept(this::updateCacheFromResult);
+        for (Long issueId : issueIds) {
+            inFlightRequests.putIfAbsent(issueId, completion);
+        }
     }
 
-    private synchronized void updateCacheFromResult(IssueLoader.Result result) {
+    private void updateCacheFromResult(IssueLoader.Result result) {
         for (Long issueId : result.getIssueIds()) {
             Map<String, Object> newFields = result.getValues(issueId);
             if (newFields == null) continue;
 
             cache.put(issueId, new HashMap<>(newFields));
+            inFlightRequests.remove(issueId);
 
-            Set<Listener> ls = issueToListeners.get(issueId);
-            if (ls != null) {
-                for (Listener listener: ls) {
-                    listener.onIssueChanged(issueId, new HashMap<>(newFields));
-                }
+            Set<Listener> listeners = issueToListeners.get(issueId);
+            if (listeners == null) return;
+
+            for (Listener listener: listeners) {
+                listener.onIssueChanged(issueId, new HashMap<>(newFields));
             }
         }
     }
