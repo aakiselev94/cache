@@ -1,5 +1,8 @@
 package com.almworks.internal.interview.issuecache;
 
+import com.almworks.internal.interview.issuecache.utils.CollectionUtils;
+import com.almworks.internal.interview.issuecache.utils.MapUtils;
+
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -31,7 +34,7 @@ public class IssueCacheImpl implements IssueCache, IssueChangeTracker.Listener {
             issueToListeners.computeIfAbsent(issueId, id -> new HashSet<>()).add(listener);
 
             Map<String, Object> fields = cache.get(issueId);
-            if (fields != null && !fields.isEmpty()) {
+            if (MapUtils.isNotEmpty(fields)) {
                 listener.onIssueChanged(issueId, new HashMap<>(fields));
             }
 
@@ -51,11 +54,11 @@ public class IssueCacheImpl implements IssueCache, IssueChangeTracker.Listener {
     @Override
     public void unsubscribe(Listener listener) {
         Set<Long> issuedIds = listeners.remove(listener);
-        if (issuedIds == null) return;
+        if (CollectionUtils.isEmpty(issuedIds)) return;
 
         for (Long issuedId : issuedIds) {
             Set<Listener> issueListeners = issueToListeners.get(issuedId);
-            if (issueListeners == null) continue;
+            if (CollectionUtils.isEmpty(issueListeners)) continue;
 
             issueListeners.remove(listener);
             if (issueListeners.isEmpty()) {
@@ -67,7 +70,7 @@ public class IssueCacheImpl implements IssueCache, IssueChangeTracker.Listener {
     @Override
     public Object getField(long issueId, String fieldId) {
         Map<String, Object> fields = cache.get(issueId);
-        return fields == null ? null : fields.get(fieldId);
+        return MapUtils.isEmpty(fields) ? null : fields.get(fieldId);
     }
 
     @Override
@@ -86,13 +89,13 @@ public class IssueCacheImpl implements IssueCache, IssueChangeTracker.Listener {
     private void updateCacheFromResult(IssueLoader.Result result) {
         for (Long issueId : result.getIssueIds()) {
             Map<String, Object> newFields = result.getValues(issueId);
-            if (newFields == null) continue;
+            if (MapUtils.isEmpty(newFields)) continue;
 
             cache.put(issueId, new HashMap<>(newFields));
             inFlightRequests.remove(issueId);
 
             Set<Listener> listeners = issueToListeners.get(issueId);
-            if (listeners == null) return;
+            if (CollectionUtils.isEmpty(listeners)) return;
 
             for (Listener listener: listeners) {
                 listener.onIssueChanged(issueId, new HashMap<>(newFields));
